@@ -7,7 +7,7 @@ import { OutputPass } from 'three/addons/postprocessing/OutputPass.js';
 import { RoomEnvironment } from 'three/addons/environments/RoomEnvironment.js';
 import { Snd, SFX } from './audio.js';
 import { rnd, pick, clamp, lerp, damp, angLerp, glow, additive, Tex, std } from './util.js';
-import { buildTurboHero, animTurboWalrus, animLimbs, buildPickup, GADGETS, RIVALS } from './models.js';
+import { buildTurboHero, animTurboWalrus, animLimbs, buildPickup, GADGETS, RIVALS, buildDisc } from './models.js';
 import { buildTracks, buildSky, TRACKS, TRACK_IDS, sampleAt, project, wrapDist, deltaS, logTrackInfo } from './tracks.js';
 
 const Q = new URLSearchParams(location.search);
@@ -143,6 +143,21 @@ const pGeo = new THREE.BufferGeometry(); pGeo.setAttribute('position', new THREE
 const points = new THREE.Points(pGeo, new THREE.PointsMaterial({ size: 0.35, map: Tex.dot(), vertexColors: true, transparent: true, blending: THREE.AdditiveBlending, depthWrite: false, toneMapped: false }));
 points.frustumCulled = false; scene.add(points);
 let pNext = 0; const tmpC = new THREE.Color();
+
+// Spiked sawblade disc on a chain — same model / glow / feel as WADGET: Chain of Ages.
+const CHAIN_N = 18;
+const disc = buildDisc(1.25); disc.visible = false; scene.add(disc);
+const chain = new THREE.InstancedMesh(
+  new THREE.BoxGeometry(0.05, 0.05, 0.18),
+  new THREE.MeshStandardMaterial({ color: 0x8a8a90, metalness: 1, roughness: 0.3, emissive: 0x400800, emissiveIntensity: 0.65 }),
+  CHAIN_N
+);
+chain.instanceMatrix.setUsage(THREE.DynamicDrawUsage); chain.frustumCulled = false; chain.visible = false; scene.add(chain);
+const discState = { state: 'held', pos: new THREE.Vector3(), vel: new THREE.Vector3(), t: 0, cool: 0, hits: new Set(), target: null };
+const handPos = new THREE.Vector3(), bez = new THREE.Vector3(), prevPt = new THREE.Vector3();
+const cm = new THREE.Matrix4(), cq = new THREE.Quaternion(), cs = new THREE.Vector3(1, 1, 1);
+let discAIWait = 0;
+
 function emit(pos, n, color, spd = 6, o = {}) {
   for (let k = 0; k < n; k++) {
     const i = pNext; pNext = (pNext + 1) % PN; const d = pData[i];
@@ -220,11 +235,12 @@ function spawnField(atS, tight = false) {
     r.pitch = Math.asin(clamp(sm.t.y, -1, 1));
     r.roll = -sm.bank; r.speed = 0; r.vel.set(0, 0, 0);
     r.lap = 0; r.ck = 0; r.finished = false; r.boost = r.isPlayer ? 55 : 35 + rnd(0, 20);
-    r.gadget = null; r.gadgetT = 0; r.onGround = true; r.airT = 0; r.stun = 0;
+    r.gadget = null; r.gadgetT = 0; r.onGround = true; r.airT = 0; r.stun = 0; r.spinOutT = 0;
     r.bestLap = 0; r.lapStart = 0; r.lastLap = 0;
     poseRacer(r);
   }
   player = G.racers.find(r => r.isPlayer);
+  resetDisc();
 }
 
 function poseRacer(r) {
@@ -234,6 +250,12 @@ function poseRacer(r) {
   P.root.rotation.y = r.yaw;
   P.root.rotation.x = r.pitch;
   P.root.rotation.z = r.roll;
+  if ((r.spinOutT || 0) > 0) {
+    const u = r.spinOutT;
+    P.root.rotation.z = r.roll + u * 14;
+    P.root.rotation.x = r.pitch + Math.sin(u * 18) * 0.55;
+    P.root.rotation.y = r.yaw + Math.sin(u * 11) * 0.45;
+  }
   if (P.shadow) { P.shadow.visible = r.onGround; P.shadow.position.y = -RIDE + 0.05; }
 }
 
@@ -296,6 +318,8 @@ function updateRacer(r, dt) {
     return;
   }
   r.stun = Math.max(0, r.stun - dt);
+  r.spinOutT = Math.max(0, (r.spinOutT || 0) - dt);
+  r.throwT = Math.max(0, (r.throwT || 0) - dt);
   r.rocketT = Math.max(0, (r.rocketT || 0) - dt);
   r.grappleT = Math.max(0, (r.grappleT || 0) - dt);
   r.heliT = Math.max(0, (r.heliT || 0) - dt);
@@ -478,7 +502,7 @@ function updateRacer(r, dt) {
   }
 
   // Keep AI (and demo autopilot) on the racing line, especially in the prairie canyon.
-  if ((!r.isPlayer || (DEMO && !G.showcase)) && (r.grappleT || 0) <= 0 && !r.finished) {
+  if ((!r.isPlayer || (DEMO && !G.showcase)) && (r.grappleT || 0) <= 0 && !r.finished && (r.spinOutT || 0) <= 0 && r.stun <= 0) {
     const tight = T.id === 'prairie' || pr.wall;
     const destLat = clamp(r.aiOff * (tight ? 0.2 : 0.4), tight ? -0.4 : -1.0, tight ? 0.4 : 1.0);
     const ahead = sampleAt(T, r.s + 18);
@@ -550,8 +574,159 @@ function rankRacers() {
   sorted.forEach((r, i) => { r.place = i + 1; });
 }
 
+// ------------------------------------------------------------------------------------------ spiked disc (always-on weapon)
+function getHandPos(out) {
+  if (player && player.P && player.P.discMount) {
+    player.P.root.updateMatrixWorld(true);
+    player.P.discMount.getWorldPosition(out);
+    return out;
+  }
+  if (player) out.copy(player.pos).y += 1.7;
+  return out;
+}
+function resetDisc() {
+  discState.state = 'held'; discState.t = 0; discState.cool = 0; discState.target = null; discState.hits.clear();
+  discState.vel.set(0, 0, 0); chain.visible = false;
+}
+function findDiscTarget() {
+  if (!player || !G.track) return null;
+  const fwdX = Math.sin(player.yaw), fwdZ = Math.cos(player.yaw);
+  let best = null, bs = 1e9;
+  for (const e of G.racers) {
+    if (e.isPlayer || e.finished || (e.spinOutT || 0) > 0.35) continue;
+    const dx = e.pos.x - player.pos.x, dz = e.pos.z - player.pos.z;
+    const d = Math.hypot(dx, dz);
+    if (d > 28 || d < 1.2) continue;
+    const ang = Math.acos(clamp((dx * fwdX + dz * fwdZ) / (d || 1), -1, 1));
+    if (ang > 0.9 && d > 8) continue;
+    const ahead = deltaS(player.s, e.s, G.track.length);
+    if (ahead < -5) continue;
+    const s = d * 0.35 + ang * 9;
+    if (s < bs) { bs = s; best = e; }
+  }
+  return best;
+}
+function discHit(e) {
+  discState.hits.add(e);
+  e.stun = 1.5; e.spinOutT = 1.5;
+  e.speed *= 0.26;
+  const away = tmpV.copy(discState.vel).setY(0);
+  if (away.lengthSq() < 1e-4) away.set(Math.sin(player.yaw), 0, Math.cos(player.yaw));
+  away.normalize();
+  e.vel.addScaledVector(away, 24); e.vel.y += 10; e.onGround = false;
+  emit(tmpV2.copy(e.pos).setY(e.pos.y + 1.15), 24, [0xff2a1a, 0xffc23a, 0xffffff], 12, { up: 5 });
+  SFX.clang(); SFX.hit();
+  G.shake = Math.max(G.shake, 0.32);
+}
+function throwDisc() {
+  if (!player || player.finished) return false;
+  if (G.mode !== 'race' && G.mode !== 'countdown') return false;
+  if (discState.state !== 'held' || discState.cool > 0) return false;
+  getHandPos(discState.pos);
+  discState.target = findDiscTarget();
+  const fwd = tmpV.set(Math.sin(player.yaw), 0.08, Math.cos(player.yaw));
+  if (discState.target) tmpV.copy(discState.target.pos).sub(discState.pos).setY(0.25);
+  if (tmpV.lengthSq() < 1e-4) tmpV.set(Math.sin(player.yaw), 0.08, Math.cos(player.yaw));
+  tmpV.normalize();
+  const launch = (player.speed || 0) + 30;
+  discState.vel.copy(tmpV).multiplyScalar(Math.max(48, launch));
+  discState.state = 'out'; discState.t = 0; discState.hits.clear();
+  player.throwT = 0.28;
+  SFX.throw();
+  return true;
+}
+function scriptThrow() {
+  if (!player || !G.track) return throwDisc();
+  discState.cool = 0;
+  if (discState.state !== 'held') resetDisc();
+  let best = findDiscTarget();
+  if (!best) {
+    best = G.racers.filter(r => !r.isPlayer && !r.finished).sort((a, b) => a.pos.distanceTo(player.pos) - b.pos.distanceTo(player.pos))[0];
+    if (best) {
+      const sm = sampleAt(G.track, wrapDist(player.s + 22, G.track.length));
+      best.s = best.hintS = sm.s; best.lateral = 0.35;
+      best.pos.copy(sm.p).addScaledVector(sm.b, 0.35).addScaledVector(sm.n, RIDE);
+      best.yaw = player.yaw; best.speed = Math.max(40, player.speed * 0.88);
+      best.vel.set(Math.sin(best.yaw) * best.speed, 0, Math.cos(best.yaw) * best.speed);
+      poseRacer(best);
+    }
+  }
+  return throwDisc();
+}
+function maybeAutoDisc(dt) {
+  if (!(DEMO || G.showcase) || G.mode !== 'race' || !player) return;
+  discAIWait -= dt;
+  if (discAIWait > 0) return;
+  if (discState.state !== 'held' || discState.cool > 0) return;
+  const t = findDiscTarget();
+  if (t && player.pos.distanceTo(t.pos) < 20) { throwDisc(); discAIWait = 1.8; }
+}
+function updateDisc(dt) {
+  const spin = disc.userData.spin;
+  if (!player || G.mode === 'title') { disc.visible = false; chain.visible = false; return; }
+  getHandPos(handPos);
+  if (discState.cool > 0) discState.cool = Math.max(0, discState.cool - dt);
+  if (discState.state === 'held') {
+    disc.position.copy(handPos);
+    if (player.P.discMount) player.P.discMount.getWorldQuaternion(disc.quaternion);
+    spin.rotation.y += dt * 8;
+    chain.visible = false; disc.visible = true;
+    if (disc.userData.halo) disc.userData.halo.material.opacity = 0.35;
+    return;
+  }
+  disc.visible = true; chain.visible = true;
+  if (disc.userData.halo) disc.userData.halo.material.opacity = 0.75;
+  discState.t += dt;
+  spin.rotation.y += dt * 38;
+  if (discState.state === 'out') {
+    if (discState.target && !discState.target.finished) {
+      tmpV.copy(discState.target.pos).setY(discState.target.pos.y + 1.05).sub(discState.pos);
+      const dist = tmpV.length();
+      tmpV.normalize().multiplyScalar((player.speed || 0) + 36);
+      discState.vel.lerp(tmpV, 1 - Math.exp(-10 * dt));
+      if (dist < 1.7) discState.t = 9;
+    }
+    discState.pos.addScaledVector(discState.vel, dt);
+    if (discState.t > 0.7 || discState.pos.distanceTo(player.pos) > 38) { discState.state = 'back'; discState.t = 0; }
+  } else {
+    tmpV.subVectors(handPos, discState.pos);
+    const dist = tmpV.length();
+    tmpV.normalize().multiplyScalar((player.speed || 0) + 55 + discState.t * 50);
+    discState.vel.lerp(tmpV, 1 - Math.exp(-14 * dt));
+    discState.pos.addScaledVector(discState.vel, dt);
+    if (dist < 1.5 || discState.t > 2.2) {
+      discState.state = 'held'; discState.cool = 0.55; SFX.catch();
+      emit(handPos, 8, 0xff3a1a, 3);
+    }
+  }
+  disc.position.copy(discState.pos);
+  tmpV2.set(discState.vel.z, 0, -discState.vel.x);
+  if (tmpV2.lengthSq() > 1e-6) { tmpV2.normalize(); disc.quaternion.setFromAxisAngle(tmpV2, 0.25); }
+  if (Math.random() < 0.85) emit(discState.pos, 1, [0xff2a1a, 0xff6a2a], 0.55, { g: 0, life: 0.35 });
+  const away = discState.pos.distanceTo(player.pos);
+  if (away > 5 || discState.t > 0.14) {
+    for (const e of G.racers) {
+      if (e.isPlayer || e.finished || discState.hits.has(e)) continue;
+      if (e.pos.distanceTo(discState.pos) < 2.5) {
+        discHit(e);
+        if (discState.state === 'out') { discState.state = 'back'; discState.t = 0; }
+      }
+    }
+  }
+  const len = handPos.distanceTo(discState.pos), sag = Math.min(1.35, len * 0.08) * (discState.state === 'out' ? 0.4 : 1);
+  prevPt.copy(handPos);
+  for (let i = 0; i < CHAIN_N; i++) {
+    const k = (i + 1) / CHAIN_N; bez.lerpVectors(handPos, discState.pos, k); bez.y -= Math.sin(k * Math.PI) * sag;
+    tmpV.subVectors(bez, prevPt); const l = tmpV.length() || 0.001;
+    cq.setFromUnitVectors(tmpV2.set(0, 0, 1), tmpV.divideScalar(l));
+    cs.set(1, 1, Math.min(4, l / 0.16)); cm.compose(tmpV2.lerpVectors(prevPt, bez, 0.5), cq, cs); chain.setMatrixAt(i, cm); prevPt.copy(bez);
+  }
+  chain.instanceMatrix.needsUpdate = true;
+}
+
 // ------------------------------------------------------------------------------------------ AI + demo autopilot
 function updateAI(r, dt) {
+
   const T = G.track, len = T.length;
   const pr = project(T, r.pos, r.hintS);
   const look = 12 + r.speed * 0.14;
@@ -610,6 +785,7 @@ function updatePlayerInput() {
     r.wantBoost = r.wantBoost || r.boost > 40;
     // scripted showcase gadgets handled in director
     if (r.wantGadget) useGadget(r);
+    maybeAutoDisc(0.016);
     return;
   }
   r.accel = input.accel ? 1 : 0;
@@ -617,10 +793,11 @@ function updatePlayerInput() {
   r.steer = input.steer;
   r.wantBoost = input.boost;
   if (input.gadget) { useGadget(r); input.gadget = false; }
+  if (input.disc) { throwDisc(); input.disc = false; }
 }
 
 // ------------------------------------------------------------------------------------------ input
-const input = { accel: false, brake: false, steer: 0, boost: false, gadget: false, left: false, right: false };
+const input = { accel: false, brake: false, steer: 0, boost: false, gadget: false, disc: false, left: false, right: false };
 const keys = new Set();
 function syncKeys() {
   input.accel = keys.has('KeyW') || keys.has('ArrowUp');
@@ -646,6 +823,7 @@ addEventListener('keydown', e => {
   }
   keys.add(e.code);
   if (e.code === 'Space' && (G.mode === 'race' || G.mode === 'countdown')) input.gadget = true;
+  if ((e.code === 'KeyF' || e.code === 'KeyJ' || e.code === 'Enter' || e.code === 'NumpadEnter') && (G.mode === 'race' || G.mode === 'countdown')) { e.preventDefault(); input.disc = true; }
   syncKeys();
 });
 addEventListener('keyup', e => { keys.delete(e.code); syncKeys(); });
@@ -656,9 +834,13 @@ function toggleMute() { const m = Snd.toggleMute(); $('mute').innerHTML = m ? '&
 
 // two-step title + general pointer
 addEventListener('pointerdown', e => {
-  if (e.target === $('mute')) return;
+  if (e.target === $('mute') || e.target === $('bDisc') || e.target === $('bGadget')) return;
   if (G.mode === 'title') { titleInput(); return; }
   if (G.mode === 'results' && G.endT > 1.1) { resultsContinue(); return; }
+  if ((G.mode === 'race' || G.mode === 'countdown') && e.button === 0 && e.pointerType !== 'touch') {
+    if (e.target && e.target.classList && e.target.classList.contains('tbtn')) return;
+    input.disc = true;
+  }
 });
 
 // touch controls
@@ -697,6 +879,7 @@ addEventListener('pointerdown', e => {
   hold($('bBrake'), v => { input.brake = v; });
   hold($('bBoost'), v => { input.boost = v; });
   $('bGadget').addEventListener('pointerdown', ev => { ev.preventDefault(); ev.stopPropagation(); input.gadget = true; });
+  if ($('bDisc')) $('bDisc').addEventListener('pointerdown', ev => { ev.preventDefault(); ev.stopPropagation(); input.disc = true; });
 })();
 
 // ------------------------------------------------------------------------------------------ camera
@@ -745,6 +928,7 @@ const tSun = new THREE.DirectionalLight(0xffc8a0, 1.2); tSun.position.set(-8, 16
 const tFill = new THREE.DirectionalLight(0xfff4e0, 0.95); tFill.position.set(6, 5, 10); titleScene.add(tFill);
 const tChin = new THREE.DirectionalLight(0xfff6e8, 1.05); tChin.position.set(0, -1.2, 9); titleScene.add(tChin);
 const titleHero = buildTurboHero(); titleHero.root.position.set(0, 0.15, 0); titleHero.root.scale.setScalar(1.15); titleScene.add(titleHero.root);
+const titleDisc = buildDisc(1.15); titleHero.discMount.add(titleDisc);
 const titlePed = new THREE.Mesh(new THREE.CylinderGeometry(2.4, 2.8, 0.45, 16), std(0x2a2a22, { roughness: 0.8, map: Tex.rock() }));
 titlePed.position.y = -0.15; titleScene.add(titlePed);
 const lavaP = new THREE.Mesh(new THREE.CircleGeometry(7, 20), new THREE.MeshStandardMaterial({ color: 0xff6a10, emissive: 0xff3a00, emissiveIntensity: 1.1, map: Tex.lava(2) }));
@@ -758,6 +942,7 @@ tSea.rotation.x = -Math.PI / 2; tSea.position.y = -0.5; titleScene.add(tSea);
 function updateTitle(dt) {
   G.titleT += dt;
   animTurboWalrus(titleHero, G.titleT * 3, 0.3, G.titleT, { boost: 0.55 + 0.25 * Math.abs(Math.sin(G.titleT * 2)), rocket: true, dt });
+  if (titleDisc.userData.spin) titleDisc.userData.spin.rotation.y += dt * 9;
   titleHero.root.rotation.y = 0.45 + Math.sin(G.titleT * 0.25) * 0.35;
   const a = 0.55 + G.titleT * 0.12;
   titleCam.position.set(Math.sin(a) * 6.15, 1.95, Math.cos(a) * 6.15);
@@ -821,6 +1006,12 @@ function updateHud(dt) {
   $('boost').style.width = clamp(player.boost, 0, 100) + '%';
   const gdef = GADGETS.find(g => g.id === player.gadget);
   $('gadgetSlot').textContent = gdef ? ('GADGET  ' + gdef.name + '  ·  SPACE') : 'GADGET  —';
+  const dEl = $('discSlot');
+  if (dEl) {
+    if (discState.state !== 'held') dEl.textContent = 'DISC  OUT';
+    else if (discState.cool > 0) dEl.textContent = 'DISC  ' + discState.cool.toFixed(1);
+    else dEl.textContent = 'DISC  READY  ·  F';
+  }
   drawMinimap();
 }
 
@@ -964,11 +1155,17 @@ const AP = {
   setupReel() {
     this.events = [
       { t: 3.4, done: false, fn: () => { startGame({ skipCount: true, frac: 0.30, tight: true, speed: 82, gadget: 'rocket' }); flash(0.5); showMsg('STORM ISLE', 'PREHISTORIA', 2); setTimeoutGadget('rocket', 0.2); setTimeoutGadget('spring', 1.7); } },
+      { t: 8.4, done: false, fn: () => { scriptThrow(); } },
+      { t: 14.2, done: false, fn: () => { scriptThrow(); } },
       { t: 17.6, done: false, fn: () => { wipeTo('prairie', 0.10, 'grapple'); } },
+      { t: 19.8, done: false, fn: () => { scriptThrow(); } },
       { t: 22.0, done: false, fn: () => { if (player) { player.gadget = 'spring'; useGadget(player); } } },
+      { t: 25.6, done: false, fn: () => { scriptThrow(); } },
       { t: 28.0, done: false, fn: () => { if (player) player.gadget = 'glove'; } },
       { t: 33.2, done: false, fn: () => { wipeTo('grid', 0.34, 'heli'); } },
+      { t: 36.0, done: false, fn: () => { scriptThrow(); } },
       { t: 40.5, done: false, fn: () => { if (player) { player.gadget = 'glove'; useGadget(player); } } },
+      { t: 43.8, done: false, fn: () => { scriptThrow(); } },
       { t: 48.5, done: false, fn: () => { forceWin(); } }
     ];
   }
@@ -990,9 +1187,10 @@ function wipeTo(id, frac, gadget) {
     r.pos.copy(sm.p).addScaledVector(sm.b, r.lateral).addScaledVector(sm.n, RIDE);
     r.yaw = Math.atan2(sm.t.x, sm.t.z); r.pitch = Math.asin(clamp(sm.t.y, -1, 1));
     r.speed = 78 + (r.isPlayer ? 12 : 0); r.onGround = true; r.vel.set(sm.t.x * r.speed, 0, sm.t.z * r.speed);
-    r.finished = false; r.lap = 1; r.ck = 1; r.stun = 0; r.heliT = r.rocketT = r.grappleT = 0;
+    r.finished = false; r.lap = 1; r.ck = 1; r.stun = 0; r.spinOutT = 0; r.heliT = r.rocketT = r.grappleT = 0;
     poseRacer(r);
   }
+  resetDisc();
   if (player && gadget) { player.gadget = gadget; useGadget(player); }
   snapCam();
   showMsg(G.track.year + '', G.track.name, 2);
@@ -1058,7 +1256,10 @@ function update(dt) {
     collideRacers();
     rankRacers();
     updateCamera(dt);
+    updateDisc(dt);
     if (player) Snd.engine(clamp(player.speed / ROCKET_SPD, 0, 1), player.boosting, G.mode === 'race' || G.mode === 'countdown');
+  } else {
+    disc.visible = false; chain.visible = false;
   }
   updateParticles(dt);
 }
@@ -1098,7 +1299,7 @@ renderer.compile(scene, camera); renderer.compile(titleScene, titleCam);
 if (CAPTURE) {
   const capState = () => ({
     mode: G.mode, track: G.trackId, lap: player ? player.lap : 0, place: player ? player.place : 0,
-    gadget: player ? player.gadget : null, boost: player ? Math.round(player.boost) : 0,
+    gadget: player ? player.gadget : null, disc: discState.state, discHits: discState.hits.size, boost: player ? Math.round(player.boost) : 0,
     speed: player ? Math.round(player.speed) : 0, t: G.t, s: player ? +player.s.toFixed(1) : 0,
     raceT: G.raceT, year: G.track ? G.track.year : null
   });
@@ -1109,4 +1310,4 @@ if (CAPTURE) {
 } else requestAnimationFrame(loop);
 
 if (typeof updatePickUI === 'function') updatePickUI();
-window.__dbg = { G, get player() { return player; }, TRACKS, applyTrack, startGame, toTitle, beginCup, Snd, camState, get titleArmed() { return titleArmed; } };
+window.__dbg = { G, get player() { return player; }, TRACKS, applyTrack, startGame, toTitle, beginCup, Snd, camState, throwDisc, scriptThrow, discState, get titleArmed() { return titleArmed; } };

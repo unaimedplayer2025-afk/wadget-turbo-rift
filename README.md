@@ -12,6 +12,7 @@ Open `index.html` from any static web server (ES modules need http, not `file://
 | Accelerate | W or ↑ | ACCEL |
 | Brake | S or ↓ | BRAKE |
 | Steer | A D or ← → | left-thumb stick |
+| Throw disc | F, J, Enter, or left click | DISC |
 | Use gadget | Space | GADGET |
 | Boost | Shift | BOOST |
 | Mute | M or the speaker button | speaker button |
@@ -37,6 +38,8 @@ Pick up one at a time, then press Space:
 - **Grapple** — a hook that yanks you through a tight corner
 - **Heli** — blades pop out and you glide over gaps
 - **Glove** — a giant boxing glove that punches a rival aside
+
+Wadget's spiked sawblade disc is always ready. Throw it with F, J, Enter, or a left click (DISC on a phone). It flies forward on a chain, can clip a rival and spin them out, then returns. There is a short cooldown after it lands back in his hand. Space is still only for gadgets.
 
 Boost pads refill the boost meter. Hold Shift to burn it.
 
