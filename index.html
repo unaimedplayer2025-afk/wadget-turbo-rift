@@ -1,0 +1,99 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">
+<link rel="icon" href="favicon.ico">
+<title>WADGET: TURBO RIFT</title>
+<meta name="description" content="Wadget rides a turbo walrus in an off-road F-Zero-style racer: Storm Isle, the Iron Prairie, and the Source Grid.">
+<style>
+  :root { --accent: #5cff3a; --accent2: #ff2ad4; }
+  * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+  html, body { margin: 0; height: 100%; background: #000; overflow: hidden; font-family: "Arial Black", "Helvetica Neue", Arial, sans-serif; color: #fff; user-select: none; -webkit-user-select: none; touch-action: none; }
+  #c { position: fixed; inset: 0; width: 100%; height: 100%; display: block; }
+  .hud { position: fixed; pointer-events: none; text-shadow: 0 0 8px var(--accent), 0 2px 0 #000; }
+  #hudTL { left: 16px; top: 12px; }
+  #lap { font-size: 28px; letter-spacing: 2px; font-style: italic; }
+  #times { font-size: 14px; letter-spacing: 1px; opacity: .95; margin-top: 2px; font-family: "Arial Black", Arial, sans-serif; }
+  #hudTR { right: 16px; top: 8px; text-align: right; }
+  #place { font-size: 48px; font-style: italic; letter-spacing: 1px; line-height: .9; color: var(--accent); text-shadow: 0 0 16px var(--accent), 0 0 3px #fff; }
+  #place small { font-size: 16px; opacity: .8; }
+  #year { font-size: 22px; font-style: italic; letter-spacing: 2px; color: var(--accent2); text-shadow: 0 0 10px var(--accent2); }
+  #eraName { font-size: 11px; letter-spacing: 3px; opacity: .85; }
+  #speedo { font-size: 28px; margin-top: 8px; letter-spacing: 1px; }
+  #speedo span { font-size: 12px; opacity: .7; }
+  #minimap { position: fixed; right: 16px; top: 150px; width: 128px; height: 128px; border: 2px solid rgba(255,255,255,.4); background: rgba(0,0,0,.45); pointer-events: none; box-shadow: 0 0 12px var(--accent); }
+  #boostWrap { position: fixed; left: 50%; bottom: 22px; transform: translateX(-50%); width: min(420px, 70vw); pointer-events: none; text-align: center; }
+  #boostLabel { font-size: 11px; letter-spacing: 3px; margin-bottom: 3px; text-shadow: 0 0 8px #ff8a10; }
+  #boostBar { height: 12px; border: 2px solid #fff; background: rgba(0,0,0,.5); transform: skewX(-16deg); box-shadow: 0 0 10px #ff8a10; }
+  #boost { height: 100%; width: 0%; background: linear-gradient(90deg, #ff8a10, #ffee55); }
+  #gadgetSlot { margin-top: 6px; font-size: 14px; letter-spacing: 3px; min-height: 18px; color: var(--accent2); text-shadow: 0 0 10px var(--accent2); }
+  #msg { left: 0; right: 0; top: 28%; text-align: center; font-size: 54px; font-style: italic; letter-spacing: 3px; opacity: 0; transition: opacity .3s; }
+  #sub { left: 0; right: 0; top: calc(28% + 66px); text-align: center; font-size: 16px; letter-spacing: 2px; opacity: 0; transition: opacity .3s; }
+  #count { left: 0; right: 0; top: 36%; text-align: center; font-size: min(28vw, 180px); font-style: italic; letter-spacing: 4px; opacity: 0; pointer-events: none; text-shadow: 0 0 30px var(--accent), 0 4px 0 #000; }
+  #flash { position: fixed; inset: 0; background: #fff; opacity: 0; pointer-events: none; }
+  #title { position: fixed; inset: 0; display: flex; flex-direction: column; align-items: center; justify-content: flex-start; padding-top: 6vh; pointer-events: none; }
+  #logo { font-size: min(17vw, 140px); font-style: italic; font-weight: 900; letter-spacing: -2px; line-height: .95; background: linear-gradient(180deg, #fff 0%, #d0ffb0 28%, #5cff3a 55%, #ff2ad4 100%); -webkit-background-clip: text; background-clip: text; color: transparent; filter: drop-shadow(0 0 18px rgba(90,255,60,.75)) drop-shadow(0 4px 0 #021); }
+  #logoSub { font-size: min(5.2vw, 36px); letter-spacing: .45em; margin-top: 4px; text-shadow: 0 0 14px #ff2ad4, 0 0 8px #5cff3a; }
+  #logoYears { font-size: min(4vw, 22px); letter-spacing: .3em; margin-top: 8px; }
+  #logoYears .a { color: #7aff5a; text-shadow: 0 0 10px #5cff3a; } #logoYears .b { color: #ffc04a; text-shadow: 0 0 10px #ffb02a; } #logoYears .c { color: #39ff6a; text-shadow: 0 0 10px #39ff6a; }
+  #trackPick { margin-top: 18px; font-size: min(4.4vw, 26px); letter-spacing: .2em; text-shadow: 0 0 12px var(--accent); }
+  #trackPick em { font-style: italic; color: var(--accent2); }
+  #prompt { position: absolute; bottom: 12vh; font-size: min(4.6vw, 22px); letter-spacing: .25em; animation: blink 1.1s infinite; text-shadow: 0 0 12px #5cff3a; }
+  #help { position: absolute; bottom: 3.6vh; font-size: 12px; letter-spacing: .12em; opacity: .75; font-family: Arial, sans-serif; text-align: center; padding: 0 10px; }
+  @keyframes blink { 50% { opacity: .35; } }
+  #mute { position: fixed; right: 12px; bottom: 12px; width: 42px; height: 42px; border-radius: 50%; border: 2px solid rgba(255,255,255,.6); background: rgba(0,0,0,.45); color: #fff; font-size: 18px; z-index: 5; cursor: pointer; }
+  #touch { display: none; }
+  body.touch #touch { display: block; }
+  #stick { position: fixed; width: 120px; height: 120px; border-radius: 50%; border: 2px solid rgba(255,255,255,.35); background: rgba(255,255,255,.06); display: none; pointer-events: none; left: 24px; bottom: 24px; }
+  #knob { position: absolute; left: 35px; top: 35px; width: 50px; height: 50px; border-radius: 50%; background: rgba(255,255,255,.35); }
+  .tbtn { position: fixed; width: 74px; height: 74px; border-radius: 50%; border: 2px solid rgba(255,255,255,.55); background: rgba(0,0,0,.35); color: #fff; font: 12px "Arial Black", Arial; display: flex; align-items: center; justify-content: center; letter-spacing: 1px; }
+  #bAccel { right: 22px; bottom: 110px; width: 92px; height: 92px; border-color: #5cff3a; box-shadow: 0 0 12px #5cff3a; }
+  #bBrake { right: 122px; bottom: 36px; }
+  #bBoost { right: 22px; bottom: 26px; width: 64px; height: 64px; border-color: #ff8a10; }
+  #bGadget { right: 118px; bottom: 130px; border-color: #ff2ad4; box-shadow: 0 0 10px #ff2ad4; }
+  body.playing #title { display: none; }
+  body:not(.playing) .gameHud { display: none !important; }
+  #end { position: fixed; inset: 0; display: none; flex-direction: column; align-items: center; justify-content: center; background: rgba(0,0,0,.55); pointer-events: none; text-align: center; padding: 12px; }
+  #end h1 { font-size: min(10vw, 72px); font-style: italic; margin: 0; text-shadow: 0 0 20px var(--accent); }
+  #end p { font-size: 18px; letter-spacing: 2px; margin: 6px 0; }
+  #standings { list-style: none; padding: 0; margin: 14px 0 0; width: min(460px, 90vw); text-align: left; font-size: 16px; letter-spacing: 1px; }
+  #standings li { display: flex; justify-content: space-between; padding: 4px 10px; background: rgba(255,255,255,.06); margin-bottom: 3px; }
+  #standings li.me { background: rgba(90,255,60,.18); box-shadow: 0 0 10px rgba(90,255,60,.4); }
+  #standings .pos { width: 2.2em; color: var(--accent); }
+</style>
+<script type="importmap">{ "imports": { "three": "./vendor/three/three.module.min.js", "three/addons/": "./vendor/three/addons/" } }</script>
+</head>
+<body>
+<canvas id="c"></canvas>
+<div id="hudTL" class="hud gameHud"><div id="lap">LAP 1/3</div><div id="times">0:00.00 &nbsp; BEST --</div></div>
+<div id="hudTR" class="hud gameHud"><div id="place">1<small>/6</small></div><div id="year">PRE</div><div id="eraName">STORM ISLE</div><div id="speedo">000 <span>KM/H</span></div></div>
+<canvas id="minimap" class="gameHud" width="128" height="128"></canvas>
+<div id="boostWrap" class="hud gameHud"><div id="boostLabel">BOOST</div><div id="boostBar"><div id="boost"></div></div><div id="gadgetSlot">GADGET —</div></div>
+<div id="msg" class="hud"></div><div id="sub" class="hud"></div><div id="count" class="hud"></div>
+<div id="flash"></div>
+<div id="end">
+  <h1 id="endTitle">FINISH</h1>
+  <p id="endText"></p>
+  <ul id="standings"></ul>
+  <p id="endPrompt" style="font-size:15px;opacity:.8;margin-top:16px">PRESS ANY KEY / TAP  ·  ← → NEXT TRACK</p>
+</div>
+<div id="title">
+  <div id="logo">WADGET</div>
+  <div id="logoSub">TURBO RIFT</div>
+  <div id="logoYears"><span class="a">PRE</span> // <span class="b">1885</span> // <span class="c">2199</span></div>
+  <div id="trackPick"><span id="trackPickKind">TRACK</span>  <em id="trackPickName">STORM ISLE</em></div>
+  <div id="prompt">TAP OR PRESS ANY KEY</div>
+  <div id="help">W / ↑ accel · S / ↓ brake · A D or arrows steer · SPACE gadget · SHIFT boost · M mute · ← → pick track or Rift Cup<br>Phone: left thumb steers, ACCEL / BRAKE / BOOST / GADGET buttons</div>
+</div>
+<div id="touch" class="gameHud">
+  <div id="stick"><div id="knob"></div></div>
+  <div id="bAccel" class="tbtn">ACCEL</div>
+  <div id="bBrake" class="tbtn">BRAKE</div>
+  <div id="bBoost" class="tbtn">BOOST</div>
+  <div id="bGadget" class="tbtn">GADGET</div>
+</div>
+<button id="mute" aria-label="mute">&#128266;</button>
+<script type="module" src="./src/main.js"></script>
+</body>
+</html>

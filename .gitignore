@@ -1,0 +1,5 @@
+node_modules/
+*.log
+demo.mp4
+hero-ref.png
+hero-ref.jpg
